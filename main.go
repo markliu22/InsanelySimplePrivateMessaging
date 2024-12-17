@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,9 +10,25 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	libp2p "github.com/libp2p/go-libp2p"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 const KEY_FILE_PATH = "./keys.json"
+
+// provided by libp2p
+var defaultBootstrapPeers = []string{
+	// "/ip4/147.75.94.249/tcp/4001/p2p/QmSoLueR4xZi6cVtcBAdfVkb9vi53Apnw8kVn5g7YRhbi", // from gpt
+	// "/ip4/147.75.94.249/tcp/4001/p2p/QmSoLer265NRgSp2LA3dPaeykiS1J6DifTC88f5uVQKNAd",
+	// "/ip4/147.75.94.249/tcp/4001/p2p/QmSoLue2YgpqfSpBzXmtSmF5BJ1MDF8cAsLwea1JHa5hTZ",
+	"/ip4/104.131.131.82/tcp/4001/ipfs/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ", // from perplexity which is from https://www.npmjs.com/package/@libp2p/bootstrap
+	"/dnsaddr/bootstrap.libp2p.io/ipfs/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+	"/dnsaddr/bootstrap.libp2p.io/ipfs/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+}
 
 // KeyPair: public and private keys
 type KeyPair struct {
@@ -58,19 +75,139 @@ func DisplayCommands() {
 	fmt.Println("- `/exit`: End the session and close the app.")
 }
 
+func getBootstrapPeers() []peer.AddrInfo {
+	var peers []peer.AddrInfo
+
+	for _, addr := range defaultBootstrapPeers {
+		maddr, err := multiaddr.NewMultiaddr(addr)
+		if err != nil {
+			fmt.Println("Error parsing multiaddr: ", err)
+		}
+		peerInfo, err := peer.AddrInfoFromP2pAddr(maddr)
+		if err != nil {
+			fmt.Println("Error getting AddrInfo from multiaddr: ", err)
+			continue
+		}
+		peers = append(peers, *peerInfo)
+	}
+
+	return peers
+}
+
+func startDHTWithBootstrap(ctx context.Context) (host.Host, *dht.IpfsDHT) {
+	// 1. Create my own host / node
+	host, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"),
+		libp2p.EnableRelay(),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Host created. We are: %s\n", host.ID().String())
+	fmt.Println("Listening on:")
+	for _, addr := range host.Addrs() {
+		fmt.Printf("  %s/p2p/%s\n", addr, host.ID().String())
+	}
+
+	// 2. Create DHT (for discovery)
+	kdht, err := dht.New(ctx, host)
+	if err != nil {
+		panic(err)
+	}
+
+	// 3. Connect to bootstrap peers
+	fmt.Println("\nConnecting to bootstrap peers...")
+	peers := getBootstrapPeers()
+	var connectedPeers int
+	for _, peer := range peers {
+		if err := host.Connect(ctx, peer); err != nil {
+			fmt.Printf("Failed to connect to bootstrap peer %s: %v\n", peer.ID.String(), err)
+		} else {
+			connectedPeers++
+			fmt.Printf("Successfully connected to bootstrap peer: %s\n", peer.ID.String())
+		}
+	}
+	fmt.Printf("Connected to %d out of %d bootstrap peers\n", connectedPeers, len(peers))
+
+	if err := kdht.Bootstrap(ctx); err != nil {
+		panic(err)
+	}
+
+	return host, kdht
+}
+
+// func connectToPeer(ctx context.Context, host libp2p.Host, dht *dht.IpfsDHT, targetIdentifier string) {
+// 	// First, ensure DHT is bootstrapped
+// 	if err := dht.Bootstrap(ctx); err != nil {
+// 		fmt.Printf("DHT bootstrap failed: %v\n", err)
+// 		return
+// 	}
+
+// 	// Convert the target identifier to a key
+// 	key := fmt.Sprintf("/chat/peer/%s", targetIdentifier)
+// 	fmt.Printf("Searching for peer with identifier: %s\n", targetIdentifier)
+
+// 	// Try to find the peer's information from the DHT
+// 	peerInfo, err := dht.GetValue(ctx, []byte(key))
+// 	if err != nil {
+// 		fmt.Printf("Failed to find peer: %v\n", err)
+// 		return
+// 	}
+
+// 	// Parse the peer address from the stored value
+// 	peerAddr, err := ma.NewMultiaddrBytes(peerInfo)
+// 	if err != nil {
+// 		fmt.Printf("Failed to parse peer address: %v\n", err)
+// 		return
+// 	}
+
+// 	// Extract the peer ID from the multiaddr
+// 	info, err := peer.AddrInfoFromP2pAddr(peerAddr)
+// 	if err != nil {
+// 		fmt.Printf("Failed to get peer info: %v\n", err)
+// 		return
+// 	}
+
+// 	// Connect to the peer
+// 	if err := host.Connect(ctx, *info); err != nil {
+// 		fmt.Printf("Failed to connect to peer: %v\n", err)
+// 		return
+// 	}
+
+// 	fmt.Println("Successfully connected!")
+// }
+
+// func advertisePeer(ctx context.Context, host libp2p.Host, dht *dht.IpfsDHT, identifier string) error {
+// 	// Create a key for this peer
+// 	key := fmt.Sprintf("/chat/peer/%s", identifier)
+
+// 	// Get this host's primary listen address
+// 	addr := host.Addrs()[0]
+// 	fullAddr := addr.Encapsulate(ma.StringCast("/p2p/" + host.ID().String()))
+
+// 	// Store this peer's address in the DHT
+// 	err := dht.PutValue(ctx, []byte(key), fullAddr.Bytes())
+// 	if err != nil {
+// 		return fmt.Errorf("failed to advertise peer: %v", err)
+// 	}
+
+// 	return nil
+// }
+
 func main() {
 	fmt.Println("Welcome to Insanely Easy Secure Messenger!")
 	fmt.Println("Do you have an existing identifier? (yes/no):")
 	var input string
 	fmt.Scanln(&input)
 
-	// !!!
+	// Identity Management
 	var keyPair KeyPair
 	var err error
 	var identifier string
 
 	if input == "yes" {
-		// load existing identifier
+		// Load existing identifier
 		keyPair, err = LoadKeyPairFromFile()
 		if err != nil {
 			fmt.Println("Error loading identifier: ", err)
@@ -95,6 +232,13 @@ func main() {
 		fmt.Println("Your identifier: ", identifier)
 	}
 
+	// Initialize DHT and join network with the bootstrap peers provided by libp2p
+	fmt.Println("Initializing DHT and connecting to the network...")
+	ctx := context.Background()
+	h, _ := startDHTWithBootstrap(ctx)
+	defer h.Close()
+
+	// Start the actual app CLI
 	fmt.Println("Type '/help' to see available commands.")
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -107,7 +251,18 @@ func main() {
 		if strings.HasPrefix(command, "/help") {
 			DisplayCommands()
 		} else if strings.HasPrefix(command, "/connect") {
+			// Connect to a specific peer by identifier
+			// parts := strings.SplitN(command, " ", 2)
+			// if len(parts) != 2 {
+			// 	fmt.Println("Usage: /connect <identifier>")
+			// 	continue
+			// }
+			// targetIdentifier := parts[1]
+			// fmt.Println("Connecting to peer: ", targetIdentifier)
+			// connectToPeer(ctx, *host, dht, targetIdentifier)
 		} else if strings.HasPrefix(command, "/send") {
+			// TODO
+			fmt.Println("Sending message to peer...")
 		} else if strings.HasPrefix(command, "/exit") {
 			fmt.Println("Goodbye! All your chats are deleted.")
 			return
@@ -116,4 +271,6 @@ func main() {
 		}
 	}
 
+	// Initialize DHT and join the network
+	fmt.Println("Initializing DHT and connecting to the network...")
 }

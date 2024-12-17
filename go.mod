@@ -5,6 +5,12 @@ go 1.22.0
 toolchain go1.22.10
 
 require (
+	github.com/libp2p/go-libp2p v0.37.2
+	github.com/libp2p/go-libp2p-kad-dht v0.28.1
+	github.com/multiformats/go-multiaddr v0.13.0
+)
+
+require (
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -44,10 +50,7 @@ require (
 	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
 	github.com/libp2p/go-cidranger v1.1.0 // indirect
 	github.com/libp2p/go-flow-metrics v0.2.0 // indirect
-	github.com/libp2p/go-libp2p v0.37.2 // indirect
 	github.com/libp2p/go-libp2p-asn-util v0.4.1 // indirect
-	github.com/libp2p/go-libp2p-core v0.20.1 // indirect
-	github.com/libp2p/go-libp2p-kad-dht v0.28.1 // indirect
 	github.com/libp2p/go-libp2p-kbucket v0.6.4 // indirect
 	github.com/libp2p/go-libp2p-record v0.2.0 // indirect
 	github.com/libp2p/go-libp2p-routing-helpers v0.7.4 // indirect
@@ -65,7 +68,6 @@ require (
 	github.com/mr-tron/base58 v1.2.0 // indirect
 	github.com/multiformats/go-base32 v0.1.0 // indirect
 	github.com/multiformats/go-base36 v0.2.0 // indirect
-	github.com/multiformats/go-multiaddr v0.13.0 // indirect
 	github.com/multiformats/go-multiaddr-dns v0.4.1 // indirect
 	github.com/multiformats/go-multiaddr-fmt v0.1.0 // indirect
 	github.com/multiformats/go-multibase v0.2.0 // indirect
