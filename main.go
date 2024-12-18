@@ -19,20 +19,20 @@ import (
 	"github.com/multiformats/go-multihash"
 )
 
-const KEY_FILE_PATH = "./private_key.pem"
+// Modified to include instance number
+const KEY_FILE_PATH_FORMAT = "./private_key_%d.pem"
 
-// provided by libp2p
 var defaultBootstrapPeers = []string{
 	"/ip4/104.131.131.82/tcp/4001/ipfs/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
 	"/dnsaddr/bootstrap.libp2p.io/ipfs/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
 	"/dnsaddr/bootstrap.libp2p.io/ipfs/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
 }
 
-// Helper to load or generate private keys
-func loadOrGeneratePrivateKey() (crypto.PrivKey, error) {
-	if _, err := os.Stat(KEY_FILE_PATH); err == nil {
-		// Key file exists; load it
-		data, err := os.ReadFile(KEY_FILE_PATH)
+// Modified to accept instance number
+func loadOrGeneratePrivateKey(instance int) (crypto.PrivKey, error) {
+	keyPath := fmt.Sprintf(KEY_FILE_PATH_FORMAT, instance)
+	if _, err := os.Stat(keyPath); err == nil {
+		data, err := os.ReadFile(keyPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read key file: %v", err)
 		}
@@ -44,23 +44,21 @@ func loadOrGeneratePrivateKey() (crypto.PrivKey, error) {
 		return privateKey, nil
 	}
 
-	// Generate a new key
 	fmt.Println("Generating a new private key...")
-	privateKey, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+	privateKey, _, err := crypto.GenerateKeyPair(crypto.RSA, 2048)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate private key: %v", err)
 	}
 
-	// Save the private key to a file
 	data, err := crypto.MarshalPrivateKey(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal private key: %v", err)
 	}
-	err = os.WriteFile(KEY_FILE_PATH, data, 0600)
+	err = os.WriteFile(keyPath, data, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to save private key: %v", err)
 	}
-	fmt.Printf("Saved new private key to %s\n", KEY_FILE_PATH)
+	fmt.Printf("Saved new private key to %s\n", keyPath)
 	return privateKey, nil
 }
 
@@ -84,10 +82,10 @@ func getBootstrapPeers() []peer.AddrInfo {
 	return peers
 }
 
-func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey) (host.Host, *dht.IpfsDHT) {
+func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey, basePort int) (host.Host, *dht.IpfsDHT) {
 	host, err := libp2p.New(
 		libp2p.Identity(privateKey),
-		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"),
+		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", basePort)),
 		libp2p.EnableRelay(),
 	)
 	if err != nil {
@@ -100,13 +98,11 @@ func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey) (host
 		fmt.Printf("  %s/p2p/%s\n", addr, host.ID().String())
 	}
 
-	// Create the DHT
 	kdht, err := dht.New(ctx, host)
 	if err != nil {
 		panic(err)
 	}
 
-	// Connect to bootstrap peers
 	fmt.Println("\nConnecting to bootstrap peers...")
 	peers := getBootstrapPeers()
 	for _, peer := range peers {
@@ -127,16 +123,13 @@ func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey) (host
 func advertiseKey(ctx context.Context, kdht *dht.IpfsDHT, identifier string) error {
 	fmt.Println("Advertising our node to the DHT...")
 
-	// Create a multihash from the identifier
 	mh, err := multihash.Sum([]byte(identifier), multihash.SHA2_256, -1)
 	if err != nil {
 		return fmt.Errorf("failed to create multihash: %v", err)
 	}
 
-	// Create a CID from the multihash
 	keyCid := cid.NewCidV1(cid.Raw, mh)
 
-	// Advertise the CID to the DHT
 	err = kdht.Provide(ctx, keyCid, true)
 	if err != nil {
 		return fmt.Errorf("failed to advertise key: %v", err)
@@ -149,17 +142,14 @@ func advertiseKey(ctx context.Context, kdht *dht.IpfsDHT, identifier string) err
 func discoverPeer(ctx context.Context, kdht *dht.IpfsDHT, identifier string) {
 	fmt.Printf("Searching for providers of key: %s\n", identifier)
 
-	// Create a multihash from the identifier
 	mh, err := multihash.Sum([]byte(identifier), multihash.SHA2_256, -1)
 	if err != nil {
 		fmt.Printf("Failed to create multihash: %v\n", err)
 		return
 	}
 
-	// Create a CID from the multihash
 	keyCid := cid.NewCidV1(cid.Raw, mh)
 
-	// Search for providers of the CID
 	peerChan := kdht.FindProvidersAsync(ctx, keyCid, 1)
 
 	foundPeers := false
@@ -182,9 +172,22 @@ func discoverPeer(ctx context.Context, kdht *dht.IpfsDHT, identifier string) {
 }
 
 func main() {
-	fmt.Println("Welcome to Insanely Easy Secure Messenger!")
+	if len(os.Args) != 2 {
+		fmt.Println("Usage: ./program <instance_number>")
+		fmt.Println("Example: ./program 1")
+		return
+	}
 
-	privateKey, err := loadOrGeneratePrivateKey()
+	var instance int
+	_, err := fmt.Sscanf(os.Args[1], "%d", &instance)
+	if err != nil {
+		fmt.Printf("Invalid instance number: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Starting Insanely Easy Secure Messenger (Instance %d)!\n", instance)
+
+	privateKey, err := loadOrGeneratePrivateKey(instance)
 	if err != nil {
 		fmt.Printf("Failed to initialize private key: %v\n", err)
 		return
@@ -200,11 +203,13 @@ func main() {
 	identifier := hex.EncodeToString(hash[:])
 	fmt.Printf("Your identifier: %s\n", identifier)
 
+	basePort := 4000 + instance
+
 	ctx := context.Background()
-	h, kdht := startDHTWithBootstrap(ctx, privateKey)
+	h, kdht := startDHTWithBootstrap(ctx, privateKey, basePort)
 	defer h.Close()
 
-	fmt.Println("Type '/help' to see available commands.")
+	fmt.Println("\nType '/help' to see available commands.")
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("> ")
