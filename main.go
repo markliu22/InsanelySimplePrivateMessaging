@@ -19,7 +19,6 @@ import (
 	"github.com/multiformats/go-multihash"
 )
 
-// Modified to include instance number
 const KEY_FILE_PATH_FORMAT = "./private_key_%d.pem"
 
 var defaultBootstrapPeers = []string{
@@ -28,7 +27,6 @@ var defaultBootstrapPeers = []string{
 	"/dnsaddr/bootstrap.libp2p.io/ipfs/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
 }
 
-// Modified to accept instance number
 func loadOrGeneratePrivateKey(instance int) (crypto.PrivKey, error) {
 	keyPath := fmt.Sprintf(KEY_FILE_PATH_FORMAT, instance)
 	if _, err := os.Stat(keyPath); err == nil {
@@ -85,8 +83,10 @@ func getBootstrapPeers() []peer.AddrInfo {
 func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey, basePort int) (host.Host, *dht.IpfsDHT) {
 	host, err := libp2p.New(
 		libp2p.Identity(privateKey),
-		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", basePort)),
-		libp2p.EnableRelay(),
+		libp2p.ListenAddrStrings(
+			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", basePort),   // Listen on all interfaces
+			fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", basePort), // Explicitly add localhost
+		),
 	)
 	if err != nil {
 		panic(err)
@@ -98,7 +98,7 @@ func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey, baseP
 		fmt.Printf("  %s/p2p/%s\n", addr, host.ID().String())
 	}
 
-	kdht, err := dht.New(ctx, host)
+	kdht, err := dht.New(ctx, host, dht.Mode(dht.ModeServer))
 	if err != nil {
 		panic(err)
 	}
@@ -120,7 +120,7 @@ func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey, baseP
 	return host, kdht
 }
 
-func advertiseKey(ctx context.Context, kdht *dht.IpfsDHT, identifier string) error {
+func advertiseKey(ctx context.Context, h host.Host, kdht *dht.IpfsDHT, identifier string) error {
 	fmt.Println("Advertising our node to the DHT...")
 
 	mh, err := multihash.Sum([]byte(identifier), multihash.SHA2_256, -1)
@@ -139,7 +139,7 @@ func advertiseKey(ctx context.Context, kdht *dht.IpfsDHT, identifier string) err
 	return nil
 }
 
-func discoverPeer(ctx context.Context, kdht *dht.IpfsDHT, identifier string) {
+func discoverPeer(ctx context.Context, h host.Host, kdht *dht.IpfsDHT, identifier string) {
 	fmt.Printf("Searching for providers of key: %s\n", identifier)
 
 	mh, err := multihash.Sum([]byte(identifier), multihash.SHA2_256, -1)
@@ -149,20 +149,37 @@ func discoverPeer(ctx context.Context, kdht *dht.IpfsDHT, identifier string) {
 	}
 
 	keyCid := cid.NewCidV1(cid.Raw, mh)
-
 	peerChan := kdht.FindProvidersAsync(ctx, keyCid, 1)
 
 	foundPeers := false
 	for peerInfo := range peerChan {
 		foundPeers = true
 		fmt.Printf("Found peer: %s\n", peerInfo.ID)
-		if len(peerInfo.Addrs) > 0 {
-			for _, addr := range peerInfo.Addrs {
-				fmt.Printf("  Address: %s\n", addr)
+
+		// Create a new AddrInfo with only localhost addresses
+		localAddrInfo := peer.AddrInfo{
+			ID: peerInfo.ID,
+			Addrs: []multiaddr.Multiaddr{
+				multiaddr.StringCast(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", 4001)), // For instance 1
+				multiaddr.StringCast(fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", 4002)), // For instance 2
+			},
+		}
+
+		// Try to connect using local addresses
+		if err := h.Connect(ctx, localAddrInfo); err != nil {
+			fmt.Printf("Failed to connect to peer via localhost: %v\n", err)
+			// If localhost fails, try the original addresses
+			if err := h.Connect(ctx, peerInfo); err != nil {
+				fmt.Printf("Failed to connect to peer via original addresses: %v\n", err)
+				continue
 			}
-			fmt.Println("You can attempt to connect to this peer using the '/connect' command.")
-		} else {
-			fmt.Println("Peer found, but no addresses are available.")
+		}
+
+		conns := h.Network().ConnsToPeer(peerInfo.ID)
+		if len(conns) > 0 {
+			for _, conn := range conns {
+				fmt.Printf("  Connected via: %s\n", conn.RemoteMultiaddr())
+			}
 		}
 	}
 
@@ -224,7 +241,7 @@ func main() {
 			fmt.Println("- `/discover <identifier>`: Search for peers advertising the specified identifier.")
 			fmt.Println("- `/exit`: End the session and close the app.")
 		} else if strings.HasPrefix(command, "/advertise") {
-			err = advertiseKey(ctx, kdht, identifier)
+			err = advertiseKey(ctx, h, kdht, identifier)
 			if err != nil {
 				fmt.Printf("Failed to advertise: %v\n", err)
 			} else {
@@ -237,7 +254,7 @@ func main() {
 				continue
 			}
 			targetIdentifier := parts[1]
-			discoverPeer(ctx, kdht, targetIdentifier)
+			discoverPeer(ctx, h, kdht, targetIdentifier)
 		} else if strings.HasPrefix(command, "/exit") {
 			fmt.Println("Goodbye! All your chats are deleted.")
 			return

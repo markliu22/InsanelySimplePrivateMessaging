@@ -16,8 +16,21 @@ go mod tidy
 ```
 
 ```
-go run main.go
+go build -o messenger
 ```
+In terminal 1:
+```
+./messenger 1
+/advertise
+note down the output of "Your identifier:" here
+```
+In terminal 2:
+```
+./messenger 2
+/discover <identifier from terminal 1>
+```
+
+
 
 TODO
 
