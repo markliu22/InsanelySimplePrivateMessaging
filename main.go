@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	cid "github.com/ipfs/go-cid"
 	libp2p "github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -26,8 +27,8 @@ var defaultBootstrapPeers = []string{
 	"/dnsaddr/bootstrap.libp2p.io/ipfs/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
 }
 
+// Helper to load or generate private keys
 func loadOrGeneratePrivateKey() (crypto.PrivKey, error) {
-	// Check if the key file exists
 	if _, err := os.Stat(KEY_FILE_PATH); err == nil {
 		// Key file exists; load it
 		data, err := os.ReadFile(KEY_FILE_PATH)
@@ -42,7 +43,7 @@ func loadOrGeneratePrivateKey() (crypto.PrivKey, error) {
 		return privateKey, nil
 	}
 
-	// Key file doesn't exist; generate a new one
+	// Generate a new key
 	fmt.Println("Generating a new private key...")
 	privateKey, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
 	if err != nil {
@@ -83,7 +84,6 @@ func getBootstrapPeers() []peer.AddrInfo {
 }
 
 func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey) (host.Host, *dht.IpfsDHT) {
-	// Create the libp2p host
 	host, err := libp2p.New(
 		libp2p.Identity(privateKey),
 		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"),
@@ -123,17 +123,66 @@ func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey) (host
 	return host, kdht
 }
 
+func advertiseKey(ctx context.Context, kdht *dht.IpfsDHT, identifier string) error {
+	fmt.Println("Advertising our node to the DHT...")
+
+	// Create a CID from the identifier
+	keyCid, err := cid.Parse("/myapp/" + identifier)
+	if err != nil {
+		return fmt.Errorf("failed to create CID: %v", err)
+	}
+
+	// Advertise the CID to the DHT
+	err = kdht.Provide(ctx, keyCid, true)
+	if err != nil {
+		return fmt.Errorf("failed to advertise key: %v", err)
+	}
+
+	fmt.Printf("Successfully advertised key: %s\n", identifier)
+	return nil
+}
+
+func discoverPeer(ctx context.Context, kdht *dht.IpfsDHT, identifier string) {
+	fmt.Printf("Searching for providers of key: %s\n", identifier)
+
+	// Create a CID from the identifier
+	keyCid, err := cid.Parse("/myapp/" + identifier)
+	if err != nil {
+		fmt.Printf("Failed to create CID: %v\n", err)
+		return
+	}
+
+	// Search for providers of the CID
+	peerChan := kdht.FindProvidersAsync(ctx, keyCid, 1)
+
+	foundPeers := false
+	for peerInfo := range peerChan {
+		foundPeers = true
+		fmt.Printf("Found peer: %s\n", peerInfo.ID)
+		if len(peerInfo.Addrs) > 0 {
+			for _, addr := range peerInfo.Addrs {
+				fmt.Printf("  Address: %s\n", addr)
+			}
+			fmt.Println("You can attempt to connect to this peer using the '/connect' command.")
+		} else {
+			fmt.Println("Peer found, but no addresses are available.")
+		}
+	}
+
+	if !foundPeers {
+		fmt.Println("No providers found for the given key.")
+	}
+}
+
 func main() {
 	fmt.Println("Welcome to Insanely Easy Secure Messenger!")
 
-	// Load or generate private key
 	privateKey, err := loadOrGeneratePrivateKey()
 	if err != nil {
 		fmt.Printf("Failed to initialize private key: %v\n", err)
 		return
 	}
 
-	// Generate peer identifier from private key
 	pubKey := privateKey.GetPublic()
 	pubKeyBytes, err := pubKey.Raw()
 	if err != nil {
@@ -144,15 +193,10 @@ func main() {
 	identifier := hex.EncodeToString(hash[:])
 	fmt.Printf("Your identifier: %s\n", identifier)
 
-	// Initialize DHT and connect to the network
 	ctx := context.Background()
 	h, kdht := startDHTWithBootstrap(ctx, privateKey)
 	defer h.Close()
 
-	// Use the DHT later (e.g., for advertising or connecting to peers)
-	_ = kdht // Suppress unused variable warning for now
-
-	// CLI Command Loop
 	fmt.Println("Type '/help' to see available commands.")
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -164,13 +208,24 @@ func main() {
 
 		if strings.HasPrefix(command, "/help") {
 			fmt.Println("\nAvailable Commands:")
-			fmt.Println("- `/connect <identifier>`: Connect to a peer using their identifier.")
-			fmt.Println("- `/send <message>`: Send a message to the connected peer.")
+			fmt.Println("- `/advertise`: Advertise your presence to the DHT.")
+			fmt.Println("- `/discover <identifier>`: Search for peers advertising the specified identifier.")
 			fmt.Println("- `/exit`: End the session and close the app.")
-		} else if strings.HasPrefix(command, "/connect") {
-			fmt.Println("TODO: Connect to a peer.")
-		} else if strings.HasPrefix(command, "/send") {
-			fmt.Println("TODO: Send a message.")
+		} else if strings.HasPrefix(command, "/advertise") {
+			err = advertiseKey(ctx, kdht, identifier)
+			if err != nil {
+				fmt.Printf("Failed to advertise: %v\n", err)
+			} else {
+				fmt.Println("Successfully advertised your presence!")
+			}
+		} else if strings.HasPrefix(command, "/discover") {
+			parts := strings.SplitN(command, " ", 2)
+			if len(parts) != 2 {
+				fmt.Println("Usage: /discover <identifier>")
+				continue
+			}
+			targetIdentifier := parts[1]
+			discoverPeer(ctx, kdht, targetIdentifier)
 		} else if strings.HasPrefix(command, "/exit") {
 			fmt.Println("Goodbye! All your chats are deleted.")
 			return
