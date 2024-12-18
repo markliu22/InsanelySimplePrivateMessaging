@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	libp2p "github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 const KEY_FILE_PATH = "./keys.json"
@@ -137,63 +139,90 @@ func startDHTWithBootstrap(ctx context.Context) (host.Host, *dht.IpfsDHT) {
 	return host, kdht
 }
 
-// func connectToPeer(ctx context.Context, host libp2p.Host, dht *dht.IpfsDHT, targetIdentifier string) {
-// 	// First, ensure DHT is bootstrapped
-// 	if err := dht.Bootstrap(ctx); err != nil {
-// 		fmt.Printf("DHT bootstrap failed: %v\n", err)
-// 		return
-// 	}
+func connectToPeer(ctx context.Context, host host.Host, dht *dht.IpfsDHT, targetIdentifier string) {
+	// First, ensure DHT is bootstrapped
+	if err := dht.Bootstrap(ctx); err != nil {
+		fmt.Printf("DHT bootstrap failed: %v\n", err)
+		return
+	}
 
-// 	// Convert the target identifier to a key
-// 	key := fmt.Sprintf("/chat/peer/%s", targetIdentifier)
-// 	fmt.Printf("Searching for peer with identifier: %s\n", targetIdentifier)
+	// Convert the target identifier to a key
+	key := fmt.Sprintf("/chat/peer/%s", targetIdentifier)
+	fmt.Printf("Searching for peer with identifier: %s\n", targetIdentifier)
 
-// 	// Try to find the peer's information from the DHT
-// 	peerInfo, err := dht.GetValue(ctx, []byte(key))
-// 	if err != nil {
-// 		fmt.Printf("Failed to find peer: %v\n", err)
-// 		return
-// 	}
+	// Try to find the peer's information from the DHT with timeout
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
-// 	// Parse the peer address from the stored value
-// 	peerAddr, err := ma.NewMultiaddrBytes(peerInfo)
-// 	if err != nil {
-// 		fmt.Printf("Failed to parse peer address: %v\n", err)
-// 		return
-// 	}
+	// Keep trying to get the value until we succeed or timeout
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("Timeout: Could not find peer")
+			return
+		default:
+			peerInfo, err := dht.GetValue(ctx, key)
+			if err == nil {
+				// Successfully got peer info
+				peerAddr, err := ma.NewMultiaddrBytes(peerInfo)
+				if err != nil {
+					fmt.Printf("Failed to parse peer address: %v\n", err)
+					return
+				}
 
-// 	// Extract the peer ID from the multiaddr
-// 	info, err := peer.AddrInfoFromP2pAddr(peerAddr)
-// 	if err != nil {
-// 		fmt.Printf("Failed to get peer info: %v\n", err)
-// 		return
-// 	}
+				info, err := peer.AddrInfoFromP2pAddr(peerAddr)
+				if err != nil {
+					fmt.Printf("Failed to get peer info: %v\n", err)
+					return
+				}
 
-// 	// Connect to the peer
-// 	if err := host.Connect(ctx, *info); err != nil {
-// 		fmt.Printf("Failed to connect to peer: %v\n", err)
-// 		return
-// 	}
+				// Connect to the peer
+				if err := host.Connect(ctx, *info); err != nil {
+					fmt.Printf("Failed to connect to peer: %v\n", err)
+					return
+				}
 
-// 	fmt.Println("Successfully connected!")
-// }
+				fmt.Println("Successfully connected!")
+				return
+			}
+			time.Sleep(1 * time.Second) // Wait before retrying
+		}
+	}
+}
 
-// func advertisePeer(ctx context.Context, host libp2p.Host, dht *dht.IpfsDHT, identifier string) error {
-// 	// Create a key for this peer
-// 	key := fmt.Sprintf("/chat/peer/%s", identifier)
+func advertisePeer(ctx context.Context, host host.Host, dht *dht.IpfsDHT, identifier string) error {
+	// Create a key for this peer
+	key := fmt.Sprintf("/chat/peer/%s", identifier)
 
-// 	// Get this host's primary listen address
-// 	addr := host.Addrs()[0]
-// 	fullAddr := addr.Encapsulate(ma.StringCast("/p2p/" + host.ID().String()))
+	// Get all host addresses and create a full multiaddr for each
+	var fullAddrs []ma.Multiaddr
+	for _, addr := range host.Addrs() {
+		fullAddr := addr.Encapsulate(ma.StringCast("/p2p/" + host.ID().String()))
+		fullAddrs = append(fullAddrs, fullAddr)
+	}
 
-// 	// Store this peer's address in the DHT
-// 	err := dht.PutValue(ctx, []byte(key), fullAddr.Bytes())
-// 	if err != nil {
-// 		return fmt.Errorf("failed to advertise peer: %v", err)
-// 	}
+	// Store the first address in the DHT (you could store all addresses if needed)
+	if len(fullAddrs) == 0 {
+		return fmt.Errorf("no addresses available to advertise")
+	}
 
-// 	return nil
-// }
+	// Add timeout for the DHT operation
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Store this peer's address in the DHT with retry
+	for i := 0; i < 3; i++ {
+		err := dht.PutValue(ctx, key, fullAddrs[0].Bytes())
+		if err == nil {
+			return nil
+		}
+		if i < 2 { // Don't sleep after the last attempt
+			time.Sleep(2 * time.Second)
+		}
+	}
+
+	return fmt.Errorf("failed to advertise peer after multiple attempts")
+}
 
 func main() {
 	fmt.Println("Welcome to Insanely Easy Secure Messenger!")
@@ -235,8 +264,16 @@ func main() {
 	// Initialize DHT and join network with the bootstrap peers provided by libp2p
 	fmt.Println("Initializing DHT and connecting to the network...")
 	ctx := context.Background()
-	h, _ := startDHTWithBootstrap(ctx)
+	h, kdht := startDHTWithBootstrap(ctx)
 	defer h.Close()
+
+	// Advertise ourselves so others can find us
+	err = advertisePeer(ctx, h, kdht, identifier)
+	if err != nil {
+		fmt.Printf("Failed to advertise peer: %v\n", err)
+		return
+	}
+	fmt.Println("Successfully advertised our peer to the network!")
 
 	// Start the actual app CLI
 	fmt.Println("Type '/help' to see available commands.")
@@ -252,14 +289,14 @@ func main() {
 			DisplayCommands()
 		} else if strings.HasPrefix(command, "/connect") {
 			// Connect to a specific peer by identifier
-			// parts := strings.SplitN(command, " ", 2)
-			// if len(parts) != 2 {
-			// 	fmt.Println("Usage: /connect <identifier>")
-			// 	continue
-			// }
-			// targetIdentifier := parts[1]
-			// fmt.Println("Connecting to peer: ", targetIdentifier)
-			// connectToPeer(ctx, *host, dht, targetIdentifier)
+			parts := strings.SplitN(command, " ", 2)
+			if len(parts) != 2 {
+				fmt.Println("Usage: /connect <identifier>")
+				continue
+			}
+			targetIdentifier := parts[1]
+			fmt.Println("Connecting to peer: ", targetIdentifier)
+			connectToPeer(ctx, h, kdht, targetIdentifier)
 		} else if strings.HasPrefix(command, "/send") {
 			// TODO
 			fmt.Println("Sending message to peer...")
