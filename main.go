@@ -3,78 +3,63 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	libp2p "github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
-	ma "github.com/multiformats/go-multiaddr"
 )
 
-const KEY_FILE_PATH = "./keys.json"
+const KEY_FILE_PATH = "./private_key.pem"
 
 // provided by libp2p
 var defaultBootstrapPeers = []string{
-	// "/ip4/147.75.94.249/tcp/4001/p2p/QmSoLueR4xZi6cVtcBAdfVkb9vi53Apnw8kVn5g7YRhbi", // from gpt
-	// "/ip4/147.75.94.249/tcp/4001/p2p/QmSoLer265NRgSp2LA3dPaeykiS1J6DifTC88f5uVQKNAd",
-	// "/ip4/147.75.94.249/tcp/4001/p2p/QmSoLue2YgpqfSpBzXmtSmF5BJ1MDF8cAsLwea1JHa5hTZ",
-	"/ip4/104.131.131.82/tcp/4001/ipfs/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ", // from perplexity which is from https://www.npmjs.com/package/@libp2p/bootstrap
+	"/ip4/104.131.131.82/tcp/4001/ipfs/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
 	"/dnsaddr/bootstrap.libp2p.io/ipfs/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
 	"/dnsaddr/bootstrap.libp2p.io/ipfs/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
 }
 
-// KeyPair: public and private keys
-type KeyPair struct {
-	PublicKey  []byte `json:"public_key"`
-	PrivateKey []byte `json:"private_key"`
-}
-
-func LoadKeyPairFromFile() (KeyPair, error) {
-	data, err := os.ReadFile(KEY_FILE_PATH)
-	if err != nil {
-		return KeyPair{}, err
+func loadOrGeneratePrivateKey() (crypto.PrivKey, error) {
+	// Check if the key file exists
+	if _, err := os.Stat(KEY_FILE_PATH); err == nil {
+		// Key file exists; load it
+		data, err := os.ReadFile(KEY_FILE_PATH)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read key file: %v", err)
+		}
+		privateKey, err := crypto.UnmarshalPrivateKey(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to unmarshal private key: %v", err)
+		}
+		fmt.Println("Loaded existing private key.")
+		return privateKey, nil
 	}
-	var keyPair KeyPair
-	err = json.Unmarshal(data, &keyPair)
-	return keyPair, err
-}
 
-func PublicKeyToIdentifier(publicKey []byte) string {
-	hash := sha256.Sum256(publicKey)
-	return hex.EncodeToString((hash[:8]))
-}
-
-func GenerateKeyPair() (KeyPair, error) {
-	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	// Key file doesn't exist; generate a new one
+	fmt.Println("Generating a new private key...")
+	privateKey, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
 	if err != nil {
-		return KeyPair{}, err
+		return nil, fmt.Errorf("failed to generate private key: %v", err)
 	}
-	return KeyPair{PublicKey: publicKey, PrivateKey: privateKey}, nil
-}
 
-func SaveKeyPair(keyPair KeyPair) error {
-	data, err := json.Marshal(keyPair)
+	// Save the private key to a file
+	data, err := crypto.MarshalPrivateKey(privateKey)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("failed to marshal private key: %v", err)
 	}
-	return os.WriteFile(KEY_FILE_PATH, data, 0600) // 0600 ensures only the owner can read/write
-}
-
-func DisplayCommands() {
-	fmt.Println("\nAvailable Commands:")
-	fmt.Println("- `/connect <identifier>`: Connect to a peer using their identifier.")
-	fmt.Println("- `/send <message>`: Send a message to the connected peer.")
-	fmt.Println("- `/help`: Display the available commands.")
-	fmt.Println("- `/exit`: End the session and close the app.")
+	err = os.WriteFile(KEY_FILE_PATH, data, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to save private key: %v", err)
+	}
+	fmt.Printf("Saved new private key to %s\n", KEY_FILE_PATH)
+	return privateKey, nil
 }
 
 func getBootstrapPeers() []peer.AddrInfo {
@@ -84,6 +69,7 @@ func getBootstrapPeers() []peer.AddrInfo {
 		maddr, err := multiaddr.NewMultiaddr(addr)
 		if err != nil {
 			fmt.Println("Error parsing multiaddr: ", err)
+			continue
 		}
 		peerInfo, err := peer.AddrInfoFromP2pAddr(maddr)
 		if err != nil {
@@ -96,9 +82,10 @@ func getBootstrapPeers() []peer.AddrInfo {
 	return peers
 }
 
-func startDHTWithBootstrap(ctx context.Context) (host.Host, *dht.IpfsDHT) {
-	// 1. Create my own host / node
+func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey) (host.Host, *dht.IpfsDHT) {
+	// Create the libp2p host
 	host, err := libp2p.New(
+		libp2p.Identity(privateKey),
 		libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"),
 		libp2p.EnableRelay(),
 	)
@@ -112,25 +99,22 @@ func startDHTWithBootstrap(ctx context.Context) (host.Host, *dht.IpfsDHT) {
 		fmt.Printf("  %s/p2p/%s\n", addr, host.ID().String())
 	}
 
-	// 2. Create DHT (for discovery)
+	// Create the DHT
 	kdht, err := dht.New(ctx, host)
 	if err != nil {
 		panic(err)
 	}
 
-	// 3. Connect to bootstrap peers
+	// Connect to bootstrap peers
 	fmt.Println("\nConnecting to bootstrap peers...")
 	peers := getBootstrapPeers()
-	var connectedPeers int
 	for _, peer := range peers {
 		if err := host.Connect(ctx, peer); err != nil {
 			fmt.Printf("Failed to connect to bootstrap peer %s: %v\n", peer.ID.String(), err)
 		} else {
-			connectedPeers++
 			fmt.Printf("Successfully connected to bootstrap peer: %s\n", peer.ID.String())
 		}
 	}
-	fmt.Printf("Connected to %d out of %d bootstrap peers\n", connectedPeers, len(peers))
 
 	if err := kdht.Bootstrap(ctx); err != nil {
 		panic(err)
@@ -139,143 +123,36 @@ func startDHTWithBootstrap(ctx context.Context) (host.Host, *dht.IpfsDHT) {
 	return host, kdht
 }
 
-func connectToPeer(ctx context.Context, host host.Host, dht *dht.IpfsDHT, targetIdentifier string) {
-	// First, ensure DHT is bootstrapped
-	if err := dht.Bootstrap(ctx); err != nil {
-		fmt.Printf("DHT bootstrap failed: %v\n", err)
-		return
-	}
-
-	// Convert the target identifier to a key
-	key := fmt.Sprintf("/chat/peer/%s", targetIdentifier)
-	fmt.Printf("Searching for peer with identifier: %s\n", targetIdentifier)
-
-	// Try to find the peer's information from the DHT with timeout
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	// Keep trying to get the value until we succeed or timeout
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("Timeout: Could not find peer")
-			return
-		default:
-			peerInfo, err := dht.GetValue(ctx, key)
-			if err == nil {
-				// Successfully got peer info
-				peerAddr, err := ma.NewMultiaddrBytes(peerInfo)
-				if err != nil {
-					fmt.Printf("Failed to parse peer address: %v\n", err)
-					return
-				}
-
-				info, err := peer.AddrInfoFromP2pAddr(peerAddr)
-				if err != nil {
-					fmt.Printf("Failed to get peer info: %v\n", err)
-					return
-				}
-
-				// Connect to the peer
-				if err := host.Connect(ctx, *info); err != nil {
-					fmt.Printf("Failed to connect to peer: %v\n", err)
-					return
-				}
-
-				fmt.Println("Successfully connected!")
-				return
-			}
-			time.Sleep(1 * time.Second) // Wait before retrying
-		}
-	}
-}
-
-func advertisePeer(ctx context.Context, host host.Host, dht *dht.IpfsDHT, identifier string) error {
-	// Create a key for this peer
-	key := fmt.Sprintf("/chat/peer/%s", identifier)
-
-	// Get all host addresses and create a full multiaddr for each
-	var fullAddrs []ma.Multiaddr
-	for _, addr := range host.Addrs() {
-		fullAddr := addr.Encapsulate(ma.StringCast("/p2p/" + host.ID().String()))
-		fullAddrs = append(fullAddrs, fullAddr)
-	}
-
-	// Store the first address in the DHT (you could store all addresses if needed)
-	if len(fullAddrs) == 0 {
-		return fmt.Errorf("no addresses available to advertise")
-	}
-
-	// Add timeout for the DHT operation
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	// Store this peer's address in the DHT with retry
-	for i := 0; i < 3; i++ {
-		err := dht.PutValue(ctx, key, fullAddrs[0].Bytes())
-		if err == nil {
-			return nil
-		}
-		if i < 2 { // Don't sleep after the last attempt
-			time.Sleep(2 * time.Second)
-		}
-	}
-
-	return fmt.Errorf("failed to advertise peer after multiple attempts")
-}
-
 func main() {
 	fmt.Println("Welcome to Insanely Easy Secure Messenger!")
-	fmt.Println("Do you have an existing identifier? (yes/no):")
-	var input string
-	fmt.Scanln(&input)
 
-	// Identity Management
-	var keyPair KeyPair
-	var err error
-	var identifier string
-
-	if input == "yes" {
-		// Load existing identifier
-		keyPair, err = LoadKeyPairFromFile()
-		if err != nil {
-			fmt.Println("Error loading identifier: ", err)
-			return
-		}
-		identifier = PublicKeyToIdentifier(keyPair.PublicKey)
-		fmt.Printf("Welcome back %s!\n", identifier)
-	} else if input == "no" {
-		fmt.Println("Generating you a new key pair...")
-		keyPair, err = GenerateKeyPair()
-		if err != nil {
-			fmt.Println("Error generating key pair for identifier: ", err)
-			return
-		}
-		err = SaveKeyPair(keyPair)
-		if err != nil {
-			fmt.Println("Error saving generated key pair: ", err)
-		}
-
-		fmt.Printf("Saved your key pair to %s!\n", KEY_FILE_PATH)
-		identifier = PublicKeyToIdentifier(keyPair.PublicKey)
-		fmt.Println("Your identifier: ", identifier)
-	}
-
-	// Initialize DHT and join network with the bootstrap peers provided by libp2p
-	fmt.Println("Initializing DHT and connecting to the network...")
-	ctx := context.Background()
-	h, kdht := startDHTWithBootstrap(ctx)
-	defer h.Close()
-
-	// Advertise ourselves so others can find us
-	err = advertisePeer(ctx, h, kdht, identifier)
+	// Load or generate private key
+	privateKey, err := loadOrGeneratePrivateKey()
 	if err != nil {
-		fmt.Printf("Failed to advertise peer: %v\n", err)
+		fmt.Printf("Failed to initialize private key: %v\n", err)
 		return
 	}
-	fmt.Println("Successfully advertised our peer to the network!")
 
-	// Start the actual app CLI
+	// Generate peer identifier from private key
+	pubKey := privateKey.GetPublic()
+	pubKeyBytes, err := pubKey.Raw()
+	if err != nil {
+		fmt.Printf("Failed to get raw public key: %v\n", err)
+		return
+	}
+	hash := sha256.Sum256(pubKeyBytes)
+	identifier := hex.EncodeToString(hash[:])
+	fmt.Printf("Your identifier: %s\n", identifier)
+
+	// Initialize DHT and connect to the network
+	ctx := context.Background()
+	h, kdht := startDHTWithBootstrap(ctx, privateKey)
+	defer h.Close()
+
+	// Use the DHT later (e.g., for advertising or connecting to peers)
+	_ = kdht // Suppress unused variable warning for now
+
+	// CLI Command Loop
 	fmt.Println("Type '/help' to see available commands.")
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -286,28 +163,19 @@ func main() {
 		command := scanner.Text()
 
 		if strings.HasPrefix(command, "/help") {
-			DisplayCommands()
+			fmt.Println("\nAvailable Commands:")
+			fmt.Println("- `/connect <identifier>`: Connect to a peer using their identifier.")
+			fmt.Println("- `/send <message>`: Send a message to the connected peer.")
+			fmt.Println("- `/exit`: End the session and close the app.")
 		} else if strings.HasPrefix(command, "/connect") {
-			// Connect to a specific peer by identifier
-			parts := strings.SplitN(command, " ", 2)
-			if len(parts) != 2 {
-				fmt.Println("Usage: /connect <identifier>")
-				continue
-			}
-			targetIdentifier := parts[1]
-			fmt.Println("Connecting to peer: ", targetIdentifier)
-			connectToPeer(ctx, h, kdht, targetIdentifier)
+			fmt.Println("TODO: Connect to a peer.")
 		} else if strings.HasPrefix(command, "/send") {
-			// TODO
-			fmt.Println("Sending message to peer...")
+			fmt.Println("TODO: Send a message.")
 		} else if strings.HasPrefix(command, "/exit") {
 			fmt.Println("Goodbye! All your chats are deleted.")
 			return
 		} else {
-			fmt.Println("Invalid input option. Type '/help' to see available commands")
+			fmt.Println("Invalid command. Type '/help' for a list of commands.")
 		}
 	}
-
-	// Initialize DHT and join the network
-	fmt.Println("Initializing DHT and connecting to the network...")
 }

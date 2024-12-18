@@ -10,4 +10,15 @@ Secure: end-to-end encryption assures your messages stay private.
 
 ## How To Run
 
+Git clone this repo and run:
+```
+go mod tidy
+```
+
+```
+go run main.go
+```
+
+TODO
+
 ## How It Works
