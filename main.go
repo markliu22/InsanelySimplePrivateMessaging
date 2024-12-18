@@ -9,13 +9,14 @@ import (
 	"os"
 	"strings"
 
-	cid "github.com/ipfs/go-cid"
+	"github.com/ipfs/go-cid"
 	libp2p "github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/multiformats/go-multihash"
 )
 
 const KEY_FILE_PATH = "./private_key.pem"
@@ -126,11 +127,14 @@ func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey) (host
 func advertiseKey(ctx context.Context, kdht *dht.IpfsDHT, identifier string) error {
 	fmt.Println("Advertising our node to the DHT...")
 
-	// Create a CID from the identifier
-	keyCid, err := cid.Parse("/myapp/" + identifier)
+	// Create a multihash from the identifier
+	mh, err := multihash.Sum([]byte(identifier), multihash.SHA2_256, -1)
 	if err != nil {
-		return fmt.Errorf("failed to create CID: %v", err)
+		return fmt.Errorf("failed to create multihash: %v", err)
 	}
+
+	// Create a CID from the multihash
+	keyCid := cid.NewCidV1(cid.Raw, mh)
 
 	// Advertise the CID to the DHT
 	err = kdht.Provide(ctx, keyCid, true)
@@ -138,19 +142,22 @@ func advertiseKey(ctx context.Context, kdht *dht.IpfsDHT, identifier string) err
 		return fmt.Errorf("failed to advertise key: %v", err)
 	}
 
-	fmt.Printf("Successfully advertised key: %s\n", identifier)
+	fmt.Printf("Successfully advertised key: %s\n", keyCid.String())
 	return nil
 }
 
 func discoverPeer(ctx context.Context, kdht *dht.IpfsDHT, identifier string) {
 	fmt.Printf("Searching for providers of key: %s\n", identifier)
 
-	// Create a CID from the identifier
-	keyCid, err := cid.Parse("/myapp/" + identifier)
+	// Create a multihash from the identifier
+	mh, err := multihash.Sum([]byte(identifier), multihash.SHA2_256, -1)
 	if err != nil {
-		fmt.Printf("Failed to create CID: %v\n", err)
+		fmt.Printf("Failed to create multihash: %v\n", err)
 		return
 	}
+
+	// Create a CID from the multihash
+	keyCid := cid.NewCidV1(cid.Raw, mh)
 
 	// Search for providers of the CID
 	peerChan := kdht.FindProvidersAsync(ctx, keyCid, 1)
