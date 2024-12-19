@@ -21,6 +21,8 @@ import (
 
 const KEY_FILE_PATH_FORMAT = "./private_key_%d.pem"
 
+// In a p2p system, if you connect to 3 separate nodes from 3 separate networks, you are essentially merging the 3 networks together
+// Don't need to worry about this because these default bootstrap nodes are already in the same network; just good for reliability in case one is down
 var defaultBootstrapPeers = []string{
 	"/ip4/104.131.131.82/tcp/4001/ipfs/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
 	"/dnsaddr/bootstrap.libp2p.io/ipfs/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
@@ -120,6 +122,7 @@ func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey, baseP
 	return host, kdht
 }
 
+// Announce in DHT "I'm here, this is my id"
 func advertiseKey(ctx context.Context, h host.Host, kdht *dht.IpfsDHT, identifier string) error {
 	fmt.Println("Advertising our node to the DHT...")
 
@@ -148,11 +151,17 @@ func discoverPeer(ctx context.Context, h host.Host, kdht *dht.IpfsDHT, identifie
 		return
 	}
 
+	// CID = Content Identifier
+	// In this case, content is just the OG identifier
+	// Do this way so we can advertise CID on DHT instead of OG identifier
+	// Doing this because this follows IPFS/libp2p conventions where the DHT is primarily designed to find providers of specific content
 	keyCid := cid.NewCidV1(cid.Raw, mh)
+	// perform async search through DHT network to find any peer that advertised keyCid
 	peerChan := kdht.FindProvidersAsync(ctx, keyCid, 1)
 
 	foundPeers := false
 	for peerInfo := range peerChan {
+		// peerChan non empty means we found at least 1
 		foundPeers = true
 		fmt.Printf("Found peer: %s\n", peerInfo.ID)
 
