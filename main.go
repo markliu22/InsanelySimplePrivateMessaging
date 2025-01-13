@@ -15,6 +15,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	libp2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/multiformats/go-multihash"
 )
@@ -82,13 +83,23 @@ func getBootstrapPeers() []peer.AddrInfo {
 	return peers
 }
 
+// Where is this DHT actually stored?
+// When Bob runs app, local DHT is stored in his own computer
+// When Alice runs app, local DHT is stored in her own computer
+// However, when Bob or Alice's DHT instance connects to another instance (bootstrap peers), they exchange routing table data
+// and effectively work as one big DHT network.
+// The data advertised in one instance becomes discoverable across the network.
 func startDHTWithBootstrap(ctx context.Context, privateKey crypto.PrivKey, basePort int) (host.Host, *dht.IpfsDHT) {
+	// Configure TLS security
+	tlsConfig := libp2p.Security(libp2ptls.ID, libp2ptls.New)
+
 	host, err := libp2p.New(
 		libp2p.Identity(privateKey),
 		libp2p.ListenAddrStrings(
 			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", basePort),   // Listen on all interfaces
 			fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", basePort), // Explicitly add localhost
 		),
+		tlsConfig, // Add TLS support !!
 	)
 	if err != nil {
 		panic(err)
