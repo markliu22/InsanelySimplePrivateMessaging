@@ -20,6 +20,17 @@ import (
 	"github.com/multiformats/go-multihash"
 )
 
+// ANSI color codes
+const (
+	ColorReset  = "\033[0m"
+	ColorRed    = "\033[31m"
+	ColorGreen  = "\033[32m"
+	ColorYellow = "\033[33m"
+	ColorBlue   = "\033[34m"
+	ColorCyan   = "\033[36m"
+	ColorWhite  = "\033[37m"
+	ColorBold   = "\033[1m"
+)
 const KEY_FILE_PATH_FORMAT = "./private_key_%d.pem"
 
 // In a p2p system, if you connect to 3 separate nodes from 3 separate networks, you are essentially merging the 3 networks together
@@ -257,9 +268,13 @@ func main() {
 
 		if strings.HasPrefix(command, "/help") {
 			fmt.Println("\nAvailable Commands:")
-			fmt.Println("- `/advertise`: Advertise your presence to the DHT.")
-			fmt.Println("- `/discover <identifier>`: Search for peers advertising the specified identifier.")
-			fmt.Println("- `/exit`: End the session and close the app.")
+			fmt.Printf("- %s%s/advertise%s: %sAdvertise your presence to the DHT.%s\n",
+				ColorCyan, ColorBold, ColorReset, ColorCyan, ColorReset)
+			fmt.Printf("- %s%s/discover <identifier>%s: %sSearch for peers advertising the specified identifier.%s\n",
+				ColorYellow, ColorBold, ColorReset, ColorYellow, ColorReset)
+			fmt.Printf("- %s%s/exit%s: %sEnd the session and close the app.%s\n",
+				ColorRed, ColorBold, ColorReset, ColorRed, ColorReset)
+			fmt.Println("- Type '/help' again to see this list.")
 		} else if strings.HasPrefix(command, "/advertise") {
 			err = advertiseKey(ctx, h, kdht, identifier)
 			if err != nil {
