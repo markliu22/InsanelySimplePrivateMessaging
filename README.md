@@ -8,6 +8,8 @@ Simple Setup: generate an identifier, tell your buddy. That's how he/she will re
 
 Secure: end-to-end encryption assures your messages stay private.
 
+Note: not using X3DH like Signal because requires server.
+
 ## How To Run
 
 Git clone this repo and run:
