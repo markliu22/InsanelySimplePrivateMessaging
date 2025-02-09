@@ -4,7 +4,7 @@ No Persistent Data: your chats and accounts are deleted as soon as you close the
 
 No Servers: peer-to-peer communication - no data is processed or stored with third parties.
 
-Simple Setup: generate an identifier, tell your buddy. That's how he/she will recognize you and you can start chatting.
+Simple Setup: generate an identifier, tell your friend. That's how he/she will recognize you and you can start chatting.
 
 Secure: end-to-end encryption assures your messages stay private.
 
